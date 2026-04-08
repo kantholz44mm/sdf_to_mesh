@@ -1,5 +1,5 @@
 use core::num;
-use std::{fs::{File, OpenOptions}, io::Write, f32::consts::PI, time::Instant};
+use std::{f32::consts::PI, fs::{File, OpenOptions}, io::Write, path::Path, time::Instant};
 use glam::{Vec3, Vec2, IVec3};
 use stl_io::{IndexedMesh, Vector, IndexedTriangle, Triangle};
 
@@ -302,22 +302,19 @@ fn sdf_box( point: Vec3, size: Vec3 ) -> f32 {
   Vec3::max(q, Vec3::ZERO).length() + f32::min(0.0, f32::max(f32::max(q.y, q.z), q.x))
 }
 
+fn sdf_sphere(sample_position: Vec3, center: Vec3, radius: f32) -> f32 {
+    center.distance(sample_position) - radius
+}
+
 fn main() {
     let cube = SDFNode::Primitive(|p| sdf_box(p, Vec3::new(2.0, 2.0, 2.0)));
-    let sphere = SDFNode::Primitive(|p| p.length() - 2.0);
+    let sphere = SDFNode::Primitive(|p| p.length() - 2.5);
     let sphere_outer = SDFNode::Primitive(|p| p.length() - 2.828427);
     let median = SDFNode::Difference(&cube, &sphere);
     let sdf = SDFNode::Intersection(&median, &sphere_outer);
-    //marching_cubes(&S, Vec3::ZERO, Vec3::new(5.0, 5.0, 5.0), 0.05);
 
-    //let function = |p: Vec3| p.z - ((p.x * p.y) / (2.0 * p.x * p.x + 3.0 * p.y * p.y)) as f32;
     let function = |p: Vec3| p.z - (-4.0 * p.x * p.y * (-3.0 * p.x * p.x + 2.0 * p.x * p.x * p.x + p.y * p.y + 2.0 * p.x * p.y * p.y)) / (p.x * p.x + p.y * p.y).powf(3.0);  //-(4 x y (-3 x^2 + 2 x^3 + y^2 + 2 x y^2))/(x^2 + y^2)^3
-    //let function = |p: Vec3| p.z - (p.x.sin() * p.y.cos());
-    marching_cubes(&SDFNode::Primitive(function), Vec3::ZERO, Vec3::new(6.0, 6.0, 6.0), 0.01);
-}
-
-fn sdf_sphere(sample_position: Vec3, center: Vec3, radius: f32) -> f32 {
-    center.distance(sample_position) - radius
+    marching_cubes(&sdf, Vec3::ZERO, Vec3::new(6.0, 6.0, 6.0), 0.01, "mesh.stl");
 }
 
 
@@ -355,7 +352,7 @@ fn sdf_sphere(sample_position: Vec3, center: Vec3, radius: f32) -> f32 {
 //
 // Triangulation cases are generated prioritising rotations over inversions, which can introduce non-manifold geometry.
 
-fn marching_cubes(sdf: &SDFNode, center: Vec3, size: Vec3, resolution: f32) {
+fn marching_cubes(sdf: &SDFNode, center: Vec3, size: Vec3, resolution: f32, stlfile: &str) {
     
     let numsteps = (size / resolution).ceil().as_ivec3();
 
@@ -418,7 +415,7 @@ fn marching_cubes(sdf: &SDFNode, center: Vec3, size: Vec3, resolution: f32) {
     }
 
     println!("done. writing mesh file...");
-    write_stl("testfile.obj", &vertices);
+    write_stl(stlfile, &vertices);
     println!("done.")
 }
 
