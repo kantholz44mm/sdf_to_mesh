@@ -1,0 +1,84 @@
+
+Program = { SOI ~ (FunctionDefinition | Assignment)* ~ ReturnStatement ~ EOI }
+
+FunctionDefinition = {
+    "def" ~ ID ~ "(" ~ ParameterList? ~ ")" ~ "->" ~ DataType ~ FunctionBody
+}
+
+ParameterList = { ParameterDefinition ~ ("," ~ ParameterDefinition)* }
+
+ParameterDefinition = { ID ~ ":" ~ DataType }
+
+DataType = { "float" | "vec1" | "vec2" | "vec3" | "vec4" | "sdf" }
+
+FunctionBody = {
+    "{" ~ Assignment* ~ ReturnStatement ~ "}"
+}
+
+ReturnStatement = {
+    "return" ~ Expression ~ ";"
+}
+
+Assignment = {
+    "let" ~ ID ~ "=" ~ Expression ~ ";"
+}
+
+Expression = {
+    Term ~ (AddOp ~ Term)*
+}
+
+Term = {
+    Factor ~ (MulOp ~ Factor)*
+}
+
+Factor = { UnaryOp? ~ Primary }
+
+UnaryOp = { "-" }
+
+Primary = {
+    PrimaryOperand ~ Swizzle?
+}
+
+PrimaryOperand = {
+    Vector
+    | FunctionCall
+    | "(" ~ Expression ~ ")"
+    | Reference
+    | NumberLit
+}
+
+FunctionCall = {
+    ID ~ "(" ~ ArgumentList? ~ ")"
+}
+
+ArgumentList = {
+    Expression ~ ("," ~ Expression)*
+}
+
+Swizzle = {
+    "." ~ SWIZZLE_IDENT
+}
+
+Vector = {
+    "<" ~ Expression ~ ("," ~ Expression)* ~ ">"
+}
+
+Reference = {
+    ID
+}
+
+NumberLit = @{
+    ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)?
+}
+
+AddOp = { "+" | "-" }
+MulOp = { "*" | "/" }
+
+KEYWORD = _{ ("def" | "return" | "let" | "float" | "vec1" | "vec2" | "vec3" | "vec4" | "sdf") ~ !(ASCII_ALPHANUMERIC | "_") }
+ID = @{ !KEYWORD ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+SWIZZLE_IDENT = @{ SWIZZLE_CHAR+ }
+SWIZZLE_CHAR = _{ "x" | "y" | "z" | "w" | "r" | "g" | "b" | "a" | "0" | "1" | "2" | "3" }
+COMMENT = _{ LINE_COMMENT | BLOCK_COMMENT }
+LINE_COMMENT = _{ "//" ~ (!"\n" ~ ANY)* }
+BLOCK_COMMENT = _{ "/*" ~ (!"*/" ~ ANY)* ~ "*/" }
+WHITESPACE = _{ (" " | "\t" | "\r" | "\n") | COMMENT }

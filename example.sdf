@@ -1,0 +1,15 @@
+let radius = 1.0;
+let knurl_depth = 0.1;
+let knurl_twist = PI / 6.0;
+
+def knurled_cylinder(r: float, h: float, depth: float, twist_amt: float) -> sdf {
+    let base = rotate(cylinder(r, h), <1, 0, 0>, PI / 2);
+    let endcap_top = translate(sphere(r),  <0, 0, h / 2.0>);
+    let endcap_bot = translate(sphere(r), -<0, 0, h / 2.0>);
+    let endcaps = union(endcap_top, endcap_bot);
+    let knurl = twist(box(<r - depth, r - depth, h / 2.0 + r>), twist_amt);
+    return intersection(union(base, endcaps), knurl);
+}
+
+let center_shaft = knurled_cylinder(radius, 3.0, knurl_depth, knurl_twist);
+return center_shaft;
