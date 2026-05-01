@@ -1,0 +1,79 @@
+Program:
+    (definitions+=FunctionDefinition | statements+=Assignment)* value=ReturnStatement
+;
+
+FunctionDefinition:
+    'def' name=ID '(' parameters*=ParameterDefinition[','] ')' '->' datatype=DataType '=' body=FunctionBody
+;
+
+ParameterDefinition:
+    name=ID ':' datatype=DataType
+;
+
+DataType:
+    'float' | 'vec1' | 'vec2' | 'vec3' | 'vec4' | 'sdf'
+;
+
+FunctionBody:
+    '{' assignments*=Assignment (value=ReturnStatement)? '}'
+;
+
+ReturnStatement:
+    'return' expression=Expression ';'
+;
+
+Assignment:
+    'let' name=ID '=' expression=Expression ';'
+;
+
+Expression:
+    terms+=Term (ops+=AddOp terms+=Term)*
+;
+
+Term:
+    factors+=Factor (ops+=MulOp factors+=Factor)*
+;
+
+Factor:
+    neg?='-' operand=Primary
+;
+
+Primary:
+    operand=PrimaryOperand swizzle=Swizzle?
+;
+
+PrimaryOperand:
+    Vector | FunctionCall | '(' Expression ')' | Reference | NumberLit
+;
+
+FunctionCall:
+    name=ID '(' args*=Expression[','] ')'
+;
+
+Swizzle:
+    '.' components=/[xyzwrgba0123]+/
+;
+
+Vector:
+    '<' elements+=Expression[','] '>'
+;
+
+Resolvable:
+    Assignment | ParameterDefinition
+;
+
+Reference:
+    variable=[Resolvable:ID]
+;
+
+NumberLit:
+    value=/\d+(\.\d+)?([eE][-+]?\d+)?/
+;
+
+AddOp:
+    '+' | '-'
+;
+
+MulOp:
+    '*' | '/'
+;

@@ -1,2 +1,6 @@
 /target
 mesh.stl
+dsl/mesh.stl
+target/
+dsl/__pycache__/
+dsl/tests/__pycache__/
