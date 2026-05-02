@@ -12,4 +12,16 @@ def knurled_cylinder(r: float, h: float, depth: float, twist_amt: float) -> sdf 
 }
 
 let center_shaft = knurled_cylinder(radius, 3.0, knurl_depth, knurl_twist);
-return center_shaft;
+let grip_capsule = translate(elongate(sphere(2.0), <0.0, 0.0, 1.0>), <2.5, 0.0, 0.0>);
+let grip_clamp_cutout = translate(cylinder(1.4, 5.0), <4.5, 0.0, 0.0>);
+
+let knurled_grip = smooth_union(center_shaft, grip_capsule, 1.5);
+let screw_pads = mirror(translate(box(<0.5, 0.5, 0.5>), <4, 0.0, 1.9>), 2);
+let grip_with_screw_pads = smooth_union(knurled_grip, screw_pads, 0.5);
+let grip_with_cutout = difference(grip_with_screw_pads, grip_clamp_cutout);
+let screw_planer = translate(box(<1.0, 1.0, 4.0>), <5.5, 0, 0>);
+
+let screw_hole = translate(rotate(cylinder(0.2, 1.0), <0, 0, 1>, PI / 2), <4.0, 0.0, 1.9>);
+let screw_holes = mirror(screw_hole, 2);
+
+return difference(difference(grip_with_cutout, screw_holes), screw_planer);
