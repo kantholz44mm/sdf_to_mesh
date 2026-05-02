@@ -1,6 +1,6 @@
 let radius = 1.0;
 let knurl_depth = 0.1;
-let knurl_twist = PI / 6.0;
+let knurl_twist = PI;
 
 def knurled_cylinder(r: float, h: float, depth: float, twist_amt: float) -> sdf {
     let base = rotate(cylinder(r, h), <1, 0, 0>, PI / 2);

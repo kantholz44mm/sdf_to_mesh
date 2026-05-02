@@ -7,7 +7,7 @@ fn sdf<F: Fn(Vec3) -> f32 + Send + Sync + 'static>(f: F) -> Sdf {
     Arc::new(f)
 }
 
-// ── Primitives ──────────────────────────────────────────────────────────────
+// Primitives
 
 pub fn sphere(radius: f32, center: Vec3) -> Sdf {
     sdf(move |p| (p - center).length() - radius)
@@ -49,7 +49,7 @@ pub fn plane(normal: Vec3, offset: f32) -> Sdf {
     sdf(move |p| p.dot(n) + offset)
 }
 
-// ── Transforms ───────────────────────────────────────────────────────────────
+// Transformations
 
 pub fn translate(s: Sdf, offset: Vec3) -> Sdf {
     sdf(move |p| s(p - offset))
@@ -89,7 +89,7 @@ pub fn twist(s: Sdf, k: f32) -> Sdf {
     })
 }
 
-// ── Booleans ─────────────────────────────────────────────────────────────────
+// Booleans
 
 pub fn union(a: Sdf, b: Sdf) -> Sdf {
     sdf(move |p| a(p).min(b(p)))
@@ -103,7 +103,7 @@ pub fn difference(a: Sdf, b: Sdf) -> Sdf {
     sdf(move |p| a(p).max(-b(p)))
 }
 
-// ── Smooth booleans ───────────────────────────────────────────────────────────
+// Booleans, but smooth
 
 pub fn smooth_union(a: Sdf, b: Sdf, k: f32) -> Sdf {
     sdf(move |p| {
@@ -129,7 +129,7 @@ pub fn smooth_difference(a: Sdf, b: Sdf, k: f32) -> Sdf {
     })
 }
 
-// ── Domain operations ────────────────────────────────────────────────────────
+// Domain operations
 
 pub fn repeat(s: Sdf, period: Vec3, count: Vec3) -> Sdf {
     sdf(move |p| s(p - period * (p / period).round().clamp(-count, count)))
@@ -141,4 +141,48 @@ pub fn onion(s: Sdf, thickness: f32) -> Sdf {
 
 pub fn offset(s: Sdf, amount: f32) -> Sdf {
     sdf(move |p| s(p) - amount)
+}
+
+// Boundary estimation
+
+fn estimate_bounding_box(s: &Sdf, search_range: f32, allowed_error: f32) -> Option<(Vec3, Vec3)> {
+    let n = search_range.ceil() as usize;
+
+    let mut min = Vec3::splat(f32::INFINITY);
+    let mut max = Vec3::splat(f32::NEG_INFINITY);
+
+    for ix in 0..n {
+        for iy in 0..n {
+            for iz in 0..n {
+                let p = Vec3::new(
+                    (ix as f32 - (n as f32 - 1.0) / 2.0) * allowed_error,
+                    (iy as f32 - (n as f32 - 1.0) / 2.0) * allowed_error,
+                    (iz as f32 - (n as f32 - 1.0) / 2.0) * allowed_error,
+                );
+
+                if s(p) <= 0.0 {
+                    min = min.min(p);
+                    max = max.max(p);
+                }
+            }
+        }
+    }
+
+    if min.is_finite() && max.is_finite() {
+        Some((min - Vec3::splat(allowed_error), max + Vec3::splat(allowed_error)))
+    } else {
+        None
+    }
+}
+
+pub fn estimate_bounding_box_iterative(s: &Sdf, search_range: f32) -> Option<(Vec3, Vec3)> {
+    
+    for subdivision in 2..=4 {
+        let allowed_error = 1.0 / subdivision as f32;
+        if let Some(bbox) = estimate_bounding_box(s, search_range, allowed_error) {
+            return Some(bbox);
+        }
+    }
+
+    return None;
 }

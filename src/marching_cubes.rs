@@ -1,121 +1,209 @@
-use std::{fs::OpenOptions, time::Instant};
+use std::{collections::HashMap, fs::OpenOptions, time::Instant};
 
-use glam::{IVec3, Vec3};
+use glam::Vec3;
+use meshopt::{typed_to_bytes, SimplifyOptions, VertexDataAdapter};
 use rayon::prelude::*;
+use spatialtree::{LodVec, OctTree, OctVec};
 use stl_io::{Triangle, Vector};
 
 use crate::sdf::primitives::Sdf;
 
+type OctCoord = OctVec<u16>;
 
-pub fn march_sdf(sdf: Sdf, center: Vec3, size: Vec3, resolution: f32, filename: &str) -> Vec<Vec3> {
-    let numsteps = (size / resolution).ceil().as_ivec3();
+const NEIGHBORS: [[u8; 3]; 8] = [
+    [0, 0, 0], [1, 0, 0],
+    [0, 1, 0], [1, 1, 0],
+    [0, 0, 1], [1, 0, 1],
+    [0, 1, 1], [1, 1, 1],
+];
 
-    let neighbors = [
-        IVec3::new(0, 0, 0), IVec3::new(1, 0, 0),
-        IVec3::new(0, 1, 0), IVec3::new(1, 1, 0),
-        IVec3::new(0, 0, 1), IVec3::new(1, 0, 1),
-        IVec3::new(0, 1, 1), IVec3::new(1, 1, 1),
-    ];
+struct Cell {
+    corners: [f32; 8],
+}
 
-    let start = center - (size - resolution) / 2.0;
+fn eval_cell(sdf: &Sdf, pos: OctCoord, world_min: Vec3, world_size: f32) -> Cell {
+    let fc = pos.float_coords();
+    let fs = pos.float_size();
+    let mut corners = [0.0f32; 8];
+    for (i, nb) in NEIGHBORS.iter().enumerate() {
+        let p = Vec3::new(
+            world_min.x + (fc[0] + nb[0] as f32 * fs) * world_size,
+            world_min.y + (fc[1] + nb[1] as f32 * fs) * world_size,
+            world_min.z + (fc[2] + nb[2] as f32 * fs) * world_size,
+        );
+        corners[i] = sdf(p);
+    }
+    Cell { corners }
+}
 
-    let sx = (numsteps.x + 1) as usize;
-    let sy = (numsteps.y + 1) as usize;
-    let sz = (numsteps.z + 1) as usize;
+fn straddles(cell: &Cell) -> bool {
+    cell.corners.iter().any(|&c| c <= 0.0) && cell.corners.iter().any(|&c| c > 0.0)
+}
 
-    let mut samples = vec![0.0f32; sx * sy * sz];
-    let start_timestamp = Instant::now();
-    println!("Sampling SDF {} times on {} threads!", samples.len(), rayon::current_num_threads());
-    
-    samples
-        .par_chunks_mut(sx * sy)
-        .enumerate()
-        .for_each(|(z, slice)| {
-            for y in 0..sy {
-                for x in 0..sx {
-                    let pos = start
-                        + Vec3::new(x as f32, y as f32, z as f32)
-                            * resolution;
+// True if the cell might contain or touch the surface.
+// Catches thin features (e.g. onion shells) where all corners are the same sign
+// but a corner is close enough to the surface that it could pass through the cell.
+fn near_surface(cell: &Cell, cell_size: f32) -> bool {
+    let threshold = 3.0_f32.sqrt() * cell_size;
+    straddles(cell) || cell.corners.iter().any(|&c| c.abs() < threshold)
+}
 
-                    slice[x + y * sx] = sdf(pos);
+fn march_cell(pos: OctCoord, cell: &Cell, world_min: Vec3, world_size: f32, out: &mut Vec<Vec3>) {
+    let fc = pos.float_coords();
+    let fs = pos.float_size();
+    let origin = Vec3::new(
+        world_min.x + fc[0] * world_size,
+        world_min.y + fc[1] * world_size,
+        world_min.z + fc[2] * world_size,
+    );
+    let cell_size = fs * world_size;
+
+    let mut accumulator: usize = 0;
+    for (i, &c) in cell.corners.iter().enumerate() {
+        if c > 0.0 {
+            accumulator |= 1 << i;
+        }
+    }
+
+    let edges = MC_TABLE[accumulator];
+    let mut i = 0;
+    while i < 12 && edges[i] != -1 {
+        for k in 0..3 {
+            let e = MC_EDGES[edges[i + k] as usize];
+            let t = cell.corners[e[0]] / (cell.corners[e[0]] - cell.corners[e[1]]);
+            let nb0 = Vec3::from_array(NEIGHBORS[e[0]].map(|x| x as f32));
+            let nb1 = Vec3::from_array(NEIGHBORS[e[1]].map(|x| x as f32));
+            out.push(origin + (nb0 + t * (nb1 - nb0)) * cell_size);
+        }
+        i += 3;
+    }
+}
+
+fn build_indexed(soup: &[Vec3]) -> (Vec<[f32; 3]>, Vec<u32>) {
+    let positions: Vec<[f32; 3]> = soup.iter().map(|v| v.to_array()).collect();
+    let (unique_count, remap) = meshopt::generate_vertex_remap(&positions, None);
+    let unique_positions = meshopt::remap_vertex_buffer(&positions, unique_count, &remap);
+    let indices = meshopt::remap_index_buffer(None, positions.len(), &remap);
+    (unique_positions, indices)
+}
+
+pub fn optimize_mesh(soup: &[Vec3], max_error: f32) -> (Vec<Vec3>, Vec<u32>) {
+    let (verts, indices) = build_indexed(soup);
+    println!("Deduplicated: {} vertices, {} triangles", verts.len(), indices.len() / 3);
+
+    let adapter = VertexDataAdapter::new(typed_to_bytes(&verts), std::mem::size_of::<[f32; 3]>(), 0).unwrap();
+    let simplified = meshopt::simplify(&indices, &adapter, 3, max_error, SimplifyOptions::ErrorAbsolute, None);
+    let simplified = if simplified.len() >= 3 { simplified } else { indices };
+
+    let mut opt_indices = meshopt::optimize_vertex_cache(&simplified, verts.len());
+    let opt_verts = meshopt::optimize_vertex_fetch::<[f32; 3]>(&mut opt_indices, &verts);
+
+    println!("Optimized: {} triangles ({:.0}% of raw)", opt_indices.len() / 3,
+        100.0 * opt_indices.len() as f32 / soup.len() as f32);
+
+    let final_verts: Vec<Vec3> = opt_verts.into_iter().map(Vec3::from_array).collect();
+    (final_verts, opt_indices)
+}
+
+pub fn march_sdf(sdf: Sdf, center: Vec3, size: Vec3, max_error: f32) -> (Vec<Vec3>, Vec<u32>) {
+    let cube_size = size.max_element();
+    let world_min = center - Vec3::splat(cube_size / 2.0);
+
+    // cell_size at depth D = cube_size / 2^D; we want cell_size <= max_error
+    let max_depth = ((cube_size / max_error).log2().ceil() as u8).clamp(1, 15);
+    println!("Adaptive Marching Cubes: max_depth={}, cell_size={:.4}", max_depth, cube_size / (1u32 << max_depth) as f32);
+
+    // BFS: evaluate candidate cells level-by-level.
+    // Cells straddling the surface are subdivided until max_depth, then stored.
+    let mut current: Vec<OctCoord> = (0..8)
+        .map(|i| OctCoord::root().get_child(i))
+        .collect();
+
+    let mut final_cells: HashMap<OctCoord, Cell> = HashMap::new();
+    let t0 = Instant::now();
+
+    loop {
+        if current.is_empty() {
+            break;
+        }
+        let depth = current[0].depth();
+        let mut next: Vec<OctCoord> = Vec::new();
+
+        let cell_size = cube_size / (1u32 << depth) as f32;
+        let (child_vecs, final_vecs): (Vec<Vec<OctCoord>>, Vec<Vec<(OctCoord, Cell)>>) = current
+            .par_iter()
+            .map(|&pos| {
+                let cell = eval_cell(&sdf, pos, world_min, cube_size);
+                if !near_surface(&cell, cell_size) {
+                    return (vec![], vec![]);
                 }
-            }
-        });
-    println!("Done in {:.2?}!", Instant::now() - start_timestamp);
+                if depth >= max_depth {
+                    if straddles(&cell) {
+                        (vec![], vec![(pos, cell)])
+                    } else {
+                        (vec![], vec![])
+                    }
+                } else {
+                    ((0..8).map(|i| pos.get_child(i)).collect(), vec![])
+                }
+            })
+            .unzip();
 
-    let start_timestamp = Instant::now();
-    println!("Generating vertices...");
+        next = child_vecs.into_iter().flatten().collect();
+        for (pos, cell) in final_vecs.into_iter().flatten() {
+            final_cells.insert(pos, cell);
+        }
 
-    let vertices: Vec<Vec3> = (0..numsteps.x as usize)
+        if next.is_empty() {
+            break;
+        }
+        current = next;
+    }
+
+    println!("BFS: {} leaf cells in {:.2?}", final_cells.len(), t0.elapsed());
+
+    // Batch-insert into tree. Sort by position for spatial locality in insert_many.
+    let mut tree = OctTree::<Cell, OctCoord>::new();
+    let mut positions: Vec<OctCoord> = final_cells.keys().copied().collect();
+    positions.sort_unstable_by_key(|p| p.pos);
+    tree.insert_many(positions.into_iter(), |pos| {
+        final_cells.remove(&pos).unwrap()
+    });
+
+    // Collect chunk data (iter_chunks requires &mut self so gather first).
+    let chunks: Vec<(OctCoord, [f32; 8])> = tree
+        .iter_chunks()
+        .map(|(_, cc)| (cc.position(), cc.chunk.corners))
+        .collect();
+
+    let raw: Vec<Vec3> = chunks
         .into_par_iter()
-        .flat_map(|x| {
-            let mut local_vertices = Vec::new();
-
-            for y in 0..numsteps.y as usize {
-                for z in 0..numsteps.z as usize {
-                    let position =
-                        start
-                        + resolution / 2.0
-                        + Vec3::new(x as f32, y as f32, z as f32) * resolution;
-
-                    let mut ns = [0.0f32; 8];
-                    let mut accumulator: usize = 0;
-
-                    for (i, nb) in neighbors.iter().enumerate() {
-                        let gi = (x + nb.x as usize)
-                            + (y + nb.y as usize) * sx
-                            + (z + nb.z as usize) * sx * sy;
-
-                        ns[i] = samples[gi];
-
-                        if ns[i] > 0.0 {
-                            accumulator |= 1 << i;
-                        }
-                    }
-
-                    let edges = MC_TABLE[accumulator];
-                    let mut i = 0;
-
-                    while i < 12 && edges[i] != -1 {
-                        for k in 0..3 {
-                            let e = MC_EDGES[edges[i + k] as usize];
-
-                            let t = ns[e[0]] / (ns[e[0]] - ns[e[1]]);
-
-                            let v = (neighbors[e[0]].as_vec3()
-                                + t * (neighbors[e[1]].as_vec3()
-                                - neighbors[e[0]].as_vec3()))
-                                * resolution;
-
-                            local_vertices.push(position + v);
-                        }
-                        i += 3;
-                    }
-                }
-            }
-
-            local_vertices
+        .flat_map_iter(|(pos, corners)| {
+            let mut v = Vec::new();
+            march_cell(pos, &Cell { corners }, world_min, cube_size, &mut v);
+            v
         })
         .collect();
 
-    println!("Generated {} triangles, took {:.2?}!", vertices.len() / 3, Instant::now() - start_timestamp);
+    println!("Generated {} triangles in {:.2?}", raw.len() / 3, t0.elapsed());
 
-    vertices
+    optimize_mesh(&raw, max_error / 4.0)
 }
 
-// ── STL / OBJ output ─────────────────────────────────────────────────────────
-
-pub fn write_stl(filename: &str, vertices: &[Vec3]) {
-    let triangles: Vec<Triangle> = vertices.chunks(3).map(|tri| {
-        let a = tri[0] - tri[1];
-        let b = tri[0] - tri[2];
-        let n = a.cross(b).normalize_or_zero();
+pub fn write_stl(filename: &str, vertices: &[Vec3], indices: &[u32]) {
+    let triangles: Vec<Triangle> = indices.chunks_exact(3).map(|tri| {
+        let (a, b, c) = (
+            vertices[tri[0] as usize],
+            vertices[tri[1] as usize],
+            vertices[tri[2] as usize],
+        );
+        let n = (b - a).cross(c - a).normalize_or_zero();
         Triangle {
             normal: Vector::new(n.to_array()),
             vertices: [
-                Vector::new(tri[0].to_array()),
-                Vector::new(tri[1].to_array()),
-                Vector::new(tri[2].to_array()),
+                Vector::new(a.to_array()),
+                Vector::new(b.to_array()),
+                Vector::new(c.to_array()),
             ],
         }
     }).collect();
@@ -140,7 +228,7 @@ pub fn write_obj(filename: &str, vertices: &[Vec3], indices: &[u32]) {
     println!("Wrote {} in {:?}", filename, start.elapsed());
 }
 
-// ── Marching cubes lookup tables ─────────────────────────────────────────────
+// Marching cubes lookup tables
 
 const MC_EDGES: [[usize; 2]; 12] = [
     [0, 1], [1, 3], [3, 2], [2, 0],

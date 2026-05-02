@@ -19,7 +19,7 @@ builds and runs the current example, which is plotting a complex function. It is
 # ToDo
 
 - [x] Basic SDF -> Mesh conversion
-- [ ] Basic SDF Primitive & Operator library
+- [x] Basic SDF Primitive & Operator library
 - [ ] Live preview output using raymarching
-- [ ] Optimizing mesh passes (face merging etc)
+- [x] Optimizing mesh passes (face merging etc)
 - [ ] Clean up the implementation and API and create proper crate
