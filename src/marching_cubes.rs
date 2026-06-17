@@ -162,6 +162,10 @@ pub fn march_sdf(sdf: Sdf, center: Vec3, size: Vec3, max_error: f32) -> (Vec<Vec
 
     println!("BFS: {} leaf cells in {:.2?}", final_cells.len(), t0.elapsed());
 
+    if final_cells.is_empty() {
+        return (vec![], vec![]);
+    }
+
     // Batch-insert into tree. Sort by position for spatial locality in insert_many.
     let mut tree = OctTree::<Cell, OctCoord>::new();
     let mut positions: Vec<OctCoord> = final_cells.keys().copied().collect();
@@ -187,7 +191,7 @@ pub fn march_sdf(sdf: Sdf, center: Vec3, size: Vec3, max_error: f32) -> (Vec<Vec
 
     println!("Generated {} triangles in {:.2?}", raw.len() / 3, t0.elapsed());
 
-    optimize_mesh(&raw, max_error / 4.0)
+    optimize_mesh(&raw, max_error / 8.0)
 }
 
 pub fn write_stl(filename: &str, vertices: &[Vec3], indices: &[u32]) {
